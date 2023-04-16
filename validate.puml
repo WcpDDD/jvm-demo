@@ -1,0 +1,118 @@
+@startuml
+note left of ApplyCtrl
+原则
+1. 异步化
+2. 重复io
+3. 异常的调用链
+4. 巨型方法
+5. 重复的消耗资源的操作，比如提交时重计算
+end note
+note left of ApplyCtrl
+共性问题
+1. 逻辑混乱，大量if/else的操作，尤其是表格子字段
+2. 调用链混乱
+3. 大量重复io
+4. 该异步的不异步
+end note
+note over ApplyCtrl: 获取了一次form
+ApplyCtrl -> PermissionChecker: 提交功能是否降级
+note over ApplyCtrl: 获取了一次form_set
+ApplyCtrl -> ApplyCtrl: 校验提交通道状态
+ApplyCtrl -> ApplySvc: 提交校验
+    group 提交校验
+        note over ApplySvc: 又获取了一次form
+        ApplySvc -> PermissionChecker: 校验提交权限
+            group 校验申请权限
+            note right
+            整个方法的角色就很离谱
+            大多数逻辑上都加了一个[!fromQSource]
+            也就是说如果是QS则只校验表单是否关闭
+            那是不是意味着表单是否关闭是个独立的行为
+            end note
+            note left
+            调用方
+            提交申请
+            数据关联
+            Q-Linker
+            end note
+            note right of PermissionChecker: 又获取了一次form_set
+            note right of PermissionChecker
+            这里的fromDataQueue应该指的是触发数据关联等时进行的校验
+            这个时候不需要验证表单是否关闭/允许提交申请
+            背景是什么？
+            end note
+            PermissionChecker -> PermissionChecker: 如果非数据关联等则校验表单是否关闭
+            PermissionChecker -> PermissionChecker: 登录可填校验
+            note right of PermissionChecker: 获取一次当前的ctct_member
+            PermissionChecker -> PermissionChecker: 指定用户可填校验
+                group 指定用户可填
+                PermissionChecker -> PermissionChecker: 用户是否存在/禁用
+                PermissionChecker -> PermissionChecker: 超级管理员不进行该校验
+                PermissionChecker -> PermissionChecker: 获取当前审批节点配置支持的用户
+                note right of PermissionChecker
+                如果这个工作区或者部门之类的用户很多可能会有点问题
+                这个主要变更的时间点主要是编辑应用/通讯录变更
+                属于可冗余的逻辑，但是开发成本可能会高于收益
+                end note
+                end
+            PermissionChecker -> PermissionChecker: 工作区可填校验
+            PermissionChecker -> PermissionChecker: 密码校验
+            end
+        ApplySvc -> QingflowLimitSvc: 商业化限制校验
+        note right of QingflowLimitSvc
+        主要是申请量/附件量
+        这里获取的数据非常多
+        几乎获取了所有的商业化限制数据
+        ws_vip甚至获取了多次
+        end note
+            group 校验应用提交限额
+            note right of ApplySvc: 又获取了一次form_set
+            ApplySvc -> ApplySvc: 校验申请人提交限额
+            note right of ApplySvc: 又一次获取了ws_vip
+                note right of ApplySvc
+                该方法会被QRobot/钉钉智能工作流直接调用
+                原因是QRobot不需要校验申请权限
+                那QS又是什么鬼？
+                end note
+                alt 设置了提交总量上限
+                ApplySvc -> ApplySvc: 判断是否超过提交总量上限
+                note right of ApplySvc: 这个应该是因为考虑到有应用被降级？
+                else 如果是公有云
+                ApplySvc -> ApplySvc: 免费版与付费版设置不同的提交总量上限
+                end
+            ApplySvc -> ApplySvc: 校验每月提交限额
+            end
+        ApplySvc -> ApplySvc: 校验参数合法性
+        note right of ApplySvc: 这里再次直接进行申请人节点获取
+        note right of ApplySvc: 仅正式提交申请的时候需要校验
+        group 参数合法性校验
+        ApplySvc -> ApplySvc: 开幕雷击，上来就先获取所有的question
+            group 处理逻辑表单
+            ApplySvc -> ApplySvc: 获取所有逻辑表单的queId
+            ApplySvc -> ApplySvc: 遍历所有的answer，删除answer中可以关联出来的queId
+            note right of ApplySvc: 如果被隐藏的是表格，则需要隐藏所有的表格子字段
+            end
+            ApplySvc -> ApplySvc: 将审批节点设置不可见的字段隐藏
+            ApplySvc -> ApplySvc: 必填校验
+            ApplySvc -> ApplySvc: 电子签章校验
+            note right of ApplySvc: 此处进行了一次ws_plugin_set的io
+            note right of ApplySvc
+            仅在apply不为空的时候进行？
+            这又是什么骚操作？
+            本质上又是一个独立的行为？
+            怎么再提交成功之后又开始调用这个方法了？
+            end note
+            ApplySvc -> ApplySvc: 验证手机号字段
+            note right of ApplySvc
+            看起来前端验证通过后会调接口存入一条数据
+            但是这个数据不会被清空？这个本质上是不是个bug？
+            现在的表现应该就是这样
+            end note
+            ApplySvc -> ApplySvc: 必填校验
+            note right of ApplySvc: 为什么这里要重复进行必填校验？
+                group 格式检查
+                ApplySvc -> ApplySvc: 公有云表格行数限制
+                end
+        end
+    end
+@enduml
